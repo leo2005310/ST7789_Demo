@@ -23,7 +23,7 @@ static_assert(kHudHeight >= 20 && kCanvasWidth >= 200 && kSpeedScale > 0 &&
               "Invalid display or timing configuration");
 
 Adafruit_ST7789 display(&SPI, kCs, kDc, kReset);
-// 整帧合成保证方块重叠时不互相擦除；SPI 只传输发生变化的矩形。
+// 整帧合成，SPI 只传输发生变化的矩形。
 GFXcanvas16 frame(kCanvasWidth, kCanvasHeight);
 Animation::Box boxes[kBoxCount];
 Animation::Rect dirtyRegions[kBoxCount];
@@ -38,20 +38,18 @@ uint32_t completedFrames = 0;
 char fpsLabel[20] = "FPS: --.-";
 bool hudDirty = false;
 
-void initializeBoxes() {
-  randomSeed(micros());
+bool initializeBoxes() {
   for (size_t i = 0; i < kBoxCount; ++i) {
     auto &box = boxes[i];
     box.size = kMinBoxSize + (kMaxBoxSize - kMinBoxSize) * i /
                                 (kBoxCount > 1 ? kBoxCount - 1 : 1);
-    box.x = random(0, kCanvasWidth - box.size + 1);
-    box.y = random(kHudHeight, kCanvasHeight - box.size + 1);
     box.velocityX = (45.0f + (i * 17) % 101) * kSpeedScale *
                     ((i & 1) ? -1.0f : 1.0f);
     box.velocityY = (35.0f + (i * 23) % 91) * kSpeedScale *
                     ((i & 2) ? -1.0f : 1.0f);
     box.color = kColors[i % kColorCount];
   }
+  return Animation::arrange(boxes, kBoxCount, kCanvasWidth, kCanvasHeight, kHudHeight);
 }
 
 void composeFrame() {
@@ -122,7 +120,17 @@ void setup() {
   display.setRotation(kRotation);
   display.invertDisplay(kInvertColors);
 
-  initializeBoxes();
+  if (!initializeBoxes()) {
+    display.fillScreen(ST77XX_BLACK);
+    display.setCursor(8, 40);
+    display.setTextColor(ST77XX_RED);
+    display.print("Too many / too large boxes");
+    digitalWrite(kBacklight, kBacklightOn);
+    while (true) {
+      Serial.println("ERROR: boxes do not fit; reduce box count or maximum size");
+      delay(1000);
+    }
+  }
   composeFrame();
   uploadRegion({0, 0, kCanvasWidth, kCanvasHeight});
   digitalWrite(kBacklight, kBacklightOn);
@@ -143,9 +151,11 @@ void loop() {
   const float seconds = min(elapsed, kMaxPhysicsStepUs) / 1000000.0f;
 
   for (size_t i = 0; i < kBoxCount; ++i) {
-    const auto previous = boxes[i].bounds();
-    Animation::advance(boxes[i], seconds, kCanvasWidth, kCanvasHeight, kHudHeight);
-    dirtyRegions[i] = Animation::combine(previous, boxes[i].bounds());
+    dirtyRegions[i] = boxes[i].bounds();
+  }
+  Animation::advanceAll(boxes, kBoxCount, seconds, kCanvasWidth, kCanvasHeight, kHudHeight);
+  for (size_t i = 0; i < kBoxCount; ++i) {
+    dirtyRegions[i] = Animation::combine(dirtyRegions[i], boxes[i].bounds());
   }
 
   composeFrame();
